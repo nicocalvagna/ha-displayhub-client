@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import json, os, re, socket, sys, time
-from typing import Any, Dict, List, Tuple
 import requests
 
 OPTIONS_FILE = "/data/options.json"
@@ -29,6 +28,15 @@ def fit_center(text, width):
         return text[:width]
     return text.center(width)
 
+def scroll_text(text, width, step):
+    text = clean(text)
+    if len(text) <= width:
+        return text.ljust(width)
+    padded = text + "   "
+    pos = step % len(padded)
+    doubled = padded + padded
+    return doubled[pos:pos + width]
+
 def format_value(state, unit="", decimals=None):
     s = "" if state is None else str(state).strip()
     if s.lower() in ("unknown", "unavailable", "none", ""):
@@ -43,14 +51,30 @@ def format_value(state, unit="", decimals=None):
     unit = "" if unit is None else str(unit).strip()
     return f"{s} {unit}" if unit else s
 
-def progress_bar(value_text, width):
-    m = re.search(r"(-?\d+(?:\.\d+)?)", value_text)
+def extract_number(value_text):
+    m = re.search(r"(-?\d+(?:\.\d+)?)", str(value_text))
     if not m:
         return None
     try:
-        value = max(0, min(100, float(m.group(1))))
+        return float(m.group(1))
     except Exception:
         return None
+
+def progress_bar(value_text, width, style="bar"):
+    value = extract_number(value_text)
+    if value is None:
+        return None
+
+    value = max(0, min(100, value))
+    style = str(style or "bar").lower()
+
+    if style == "percent":
+        prefix = f"{int(round(value))}% "
+        bar_width = max(0, width - len(prefix))
+        filled = round(value / 100 * bar_width)
+        bar = "#" * filled + "-" * (bar_width - filled)
+        return (prefix + bar)[:width]
+
     filled = round(value / 100 * width)
     return ("#" * filled + "-" * (width - filled))[:width]
 
@@ -137,15 +161,21 @@ class LCD:
         self.send("widget_set main line1 1 1 {" + clean(l1) + "}")
         self.send("widget_set main line2 1 2 {" + clean(l2) + "}")
 
-def render(ha, screen, width):
+def render(ha, screen, width, scroll_step):
     entity = str(screen.get("entity", "")).strip()
     title = str(screen.get("name") or entity).strip()
+
+    if bool(screen.get("scroll", False)):
+        title = scroll_text(title, width, scroll_step)
+
     ok, data, err = ha.get_entity(entity)
     if not ok:
         return title, err
+
     attrs = data.get("attributes", {}) or {}
     state = data.get("state", "")
     domain = entity.split(".", 1)[0] if "." in entity else ""
+
     if domain == "binary_sensor":
         value = "ON" if state == "on" else "OFF" if state == "off" else str(state)
     else:
@@ -153,10 +183,12 @@ def render(ha, screen, width):
         if unit is None:
             unit = attrs.get("unit_of_measurement", "") or ""
         value = format_value(state, unit, screen.get("decimals"))
+
     if bool(screen.get("progressbar", False)):
-        bar = progress_bar(value, width)
+        bar = progress_bar(value, width, screen.get("bar_style", "bar"))
         if bar:
             return title, bar
+
     return title, value
 
 def main():
@@ -165,10 +197,11 @@ def main():
     if not host:
         log("ERROR: lcdproc_host vacío")
         sys.exit(1)
+
     port = int(cfg.get("lcdproc_port", 13666))
     width = int(cfg.get("lcd_width", 16))
     rotation = max(1, int(cfg.get("rotation_seconds", 5)))
-    refresh = max(1, int(cfg.get("refresh_seconds", 2)))
+    refresh = max(1, int(cfg.get("refresh_seconds", 1)))
     debug = bool(cfg.get("debug", False))
     screens = [s for s in cfg.get("screens", []) if isinstance(s, dict) and s.get("entity")]
 
@@ -185,19 +218,27 @@ def main():
 
     idx = -1
     last = 0
+    scroll_step = 0
+
     while True:
         try:
             if not screens:
                 lcd.display("Sin pantallas", "Config add-on")
                 time.sleep(5)
                 continue
+
             now = time.time()
             if idx < 0 or now - last >= rotation:
                 idx = (idx + 1) % len(screens)
                 last = now
-            line1, line2 = render(ha, screens[idx], width)
+                scroll_step = 0
+
+            line1, line2 = render(ha, screens[idx], width, scroll_step)
             lcd.display(line1, line2)
+
+            scroll_step += 1
             time.sleep(refresh)
+
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             log("LCDproc disconnected:", e)
             time.sleep(3)
