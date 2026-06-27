@@ -49,7 +49,7 @@ screens:
     decimals: int?
     unit: str?
     progressbar: bool?
-    bar_style: list(bar|percent|needle)?
+    bar_style: str?
     bar_min: float?
     bar_max: float?
     scroll: bool?   
