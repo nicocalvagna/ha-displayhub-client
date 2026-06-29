@@ -1,7 +1,7 @@
-name: "LCDproc Client V2"
-description: "Modern configurable LCDproc client for Home Assistant"
+name: "Display Hub Client"
+description: "Client for HA Display Hub"
+slug: "displayhub_client"
 version: "0.1.0"
-slug: "lcdproc_client_v2"
 init: false
 arch:
   - amd64
@@ -15,29 +15,32 @@ hassio_api: true
 homeassistant_api: true
 hassio_role: homeassistant
 options:
-  lcdproc_host: "192.168.88.206"
-  lcdproc_port: 13666
+  displayhub_host: "192.168.88.108"
+  displayhub_port: 4510
   lcd_width: 16
   lcd_height: 2
   rotation_seconds: 5
   refresh_seconds: 2
   debug: false
   screens:
-    - name: "Cisterna"
-      entity: "sensor.nivel_cisterna"
-      decimals: 0
-      progressbar: true
-      bar_style: "percent"
-      scroll: false
+  - name: "Exterior"
+    display: "rack1"
+    entity: "sensor.alfa_clima_outside_temperature"
+    decimals: 1
+    progressbar: false
+    scroll: true
 
-    - name: "Exterior"
-      entity: "sensor.alfa_clima_outside_temperature"
-      decimals: 2
-      progressbar: false
-      scroll: true
+  - name: "Cisterna"
+    display: "rack2"
+    entity: "sensor.nivel_cisterna"
+    decimals: 0
+    progressbar: true
+    bar_style: "percent"
+    bar_min: "0"
+    bar_max: "100"
 schema:
-  lcdproc_host: str
-  lcdproc_port: port
+  displayhub_host: str
+  displayhub_port: port
   lcd_width: int
   lcd_height: int
   rotation_seconds: int
@@ -45,6 +48,7 @@ schema:
   debug: bool
   screens:
     - name: str
+      display: str
       entity: str
       decimals: int?
       unit: str?

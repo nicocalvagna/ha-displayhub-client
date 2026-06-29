@@ -14,8 +14,7 @@ def load_config():
 def clean(text):
     text = "" if text is None else str(text)
     text = text.replace("\n", " ").replace("\r", " ")
-    text = text.replace("{", "(").replace("}", ")")
-    text = text.replace("°", chr(223))
+    text = text.replace("°", "C")
     return re.sub(r"\s+", " ", text).strip()
 
 def fit_left(text, width):
@@ -33,9 +32,18 @@ def scroll_text(text, width, step):
     if len(text) <= width:
         return text.ljust(width)
     padded = text + "   "
-    pos = step % len(padded)
     doubled = padded + padded
+    pos = step % len(padded)
     return doubled[pos:pos + width]
+
+def extract_number(value_text):
+    m = re.search(r"(-?\d+(?:\.\d+)?)", str(value_text))
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
 
 def format_value(state, unit="", decimals=None):
     s = "" if state is None else str(state).strip()
@@ -48,58 +56,47 @@ def format_value(state, unit="", decimals=None):
         s = f"{n:.{int(decimals)}f}".rstrip("0").rstrip(".")
     except Exception:
         pass
+
     unit = "" if unit is None else str(unit).strip()
     return f"{s} {unit}" if unit else s
-
-def extract_number(value_text):
-    m = re.search(r"(-?\d+(?:\.\d+)?)", str(value_text))
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except Exception:
-        return None
 
 def scaled_percent(value_text, bar_min=0, bar_max=100):
     value = extract_number(value_text)
     if value is None:
         return None
-
     try:
         bar_min = float(bar_min)
         bar_max = float(bar_max)
     except Exception:
         bar_min = 0
         bar_max = 100
-
     if bar_max == bar_min:
         return None
-
-    percent = (value - bar_min) / (bar_max - bar_min) * 100
-    return max(0, min(100, percent))
+    pct = (value - bar_min) / (bar_max - bar_min) * 100
+    return max(0, min(100, pct))
 
 def progress_bar(value_text, width, style="bar", bar_min=0, bar_max=100):
-    percent = scaled_percent(value_text, bar_min, bar_max)
-    if percent is None:
+    pct = scaled_percent(value_text, bar_min, bar_max)
+    if pct is None:
         return None
 
     style = str(style or "bar").lower()
 
     if style == "percent":
-        prefix = f"{int(round(percent))}% "
+        prefix = f"{int(round(pct))}% "
         bar_width = max(0, width - len(prefix))
-        filled = round(percent / 100 * bar_width)
-        bar = "#" * filled + "-" * (bar_width - filled)
-        return (prefix + bar)[:width]
+        filled = round(pct / 100 * bar_width)
+        return (prefix + "#" * filled + "-" * (bar_width - filled))[:width]
 
     if style == "needle":
-        pos = round(percent / 100 * (width - 1))
+        pos = round(pct / 100 * (width - 1))
         chars = ["-"] * width
         chars[pos] = "|"
         return "".join(chars)
 
-    filled = round(percent / 100 * width)
+    filled = round(pct / 100 * width)
     return ("#" * filled + "-" * (width - filled))[:width]
+
 class HA:
     def __init__(self):
         token = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -120,69 +117,40 @@ class HA:
         except Exception:
             return False, {}, "JSON error"
 
-class LCD:
-    def __init__(self, host, port, width, debug=False):
-        self.host, self.port, self.width, self.debug = host, port, width, debug
-        self.sock = None
+class DisplayHub:
+    def __init__(self, host, port, debug=False):
+        self.host = host
+        self.port = int(port)
+        self.debug = debug
 
-    def connect(self):
-        self.close()
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(10)
-        self.sock.connect((self.host, self.port))
-        self.raw("hello")
-        hello = self.recv()
-        log("LCDproc connected:", hello.strip())
-        self.send("client_set name {HA_LCD_V2}")
-        self.send("screen_add main")
-        self.send("screen_set main name {HA LCD V2}")
-        self.send("screen_set main heartbeat off")
-        self.send("screen_set main priority foreground")
-        self.send("widget_add main title title")
-        self.send("widget_add main line1 string")
-        self.send("widget_add main line2 string")
+    def send_lines(self, target, lines):
+        payload = {
+            "cmd": "display",
+            "target": target,
+            "lines": lines,
+        }
 
-    def close(self):
-        try:
-            if self.sock:
-                self.sock.close()
-        except Exception:
-            pass
-        self.sock = None
+        msg = json.dumps(payload) + "\n"
 
-    def recv(self):
-        try:
-            return self.sock.recv(512).decode("utf-8", errors="replace")
-        except Exception:
-            return ""
-
-    def raw(self, msg):
         if self.debug:
-            log("LCD <<", msg)
-        self.sock.sendall((msg + "\n").encode("utf-8"))
+            log("DisplayHub <<", msg.strip())
 
-    def send(self, msg):
-        self.raw(msg)
-        old = self.sock.gettimeout()
         try:
-            self.sock.settimeout(0.15)
-            resp = self.recv().strip()
-            if resp and self.debug:
-                log("LCD >>", resp)
-        except Exception:
-            pass
-        finally:
-            try:
-                self.sock.settimeout(old)
-            except Exception:
-                pass
+            with socket.create_connection((self.host, self.port), timeout=5) as sock:
+                sock.sendall(msg.encode("utf-8"))
+                response = sock.recv(1024).decode("utf-8", errors="replace").strip()
+        except Exception as exc:
+            log("DisplayHub error:", exc)
+            return False
 
-    def display(self, line1, line2):
-        l1 = fit_left(line1, self.width)
-        l2 = fit_center(line2, self.width)
-        self.send("widget_set main title {" + clean(l1) + "}")
-        self.send("widget_set main line1 1 1 {" + clean(l1) + "}")
-        self.send("widget_set main line2 1 2 {" + clean(l2) + "}")
+        if self.debug:
+            log("DisplayHub >>", response)
+
+        try:
+            data = json.loads(response)
+            return data.get("status") == "ok"
+        except Exception:
+            return False
 
 def render(ha, screen, width, scroll_step):
     entity = str(screen.get("entity", "")).strip()
@@ -193,7 +161,7 @@ def render(ha, screen, width, scroll_step):
 
     ok, data, err = ha.get_entity(entity)
     if not ok:
-        return title, err
+        return fit_left(title, width), fit_center(err, width)
 
     attrs = data.get("attributes", {}) or {}
     state = data.get("state", "")
@@ -215,75 +183,71 @@ def render(ha, screen, width, scroll_step):
             screen.get("bar_min", 0),
             screen.get("bar_max", 100),
         )
-
         if bar:
-            return title, bar
+            value = bar
 
-    return title, value
+    return fit_left(title, width), fit_center(value, width)
 
 def main():
     cfg = load_config()
-    host = str(cfg.get("lcdproc_host", "")).strip()
-    if not host:
-        log("ERROR: lcdproc_host vacío")
-        sys.exit(1)
 
-    port = int(cfg.get("lcdproc_port", 13666))
+    host = str(cfg.get("displayhub_host", "")).strip()
+    port = int(cfg.get("displayhub_port", 4510))
     width = int(cfg.get("lcd_width", 16))
     rotation = max(1, int(cfg.get("rotation_seconds", 5)))
     refresh = max(1, int(cfg.get("refresh_seconds", 1)))
     debug = bool(cfg.get("debug", False))
-    screens = [s for s in cfg.get("screens", []) if isinstance(s, dict) and s.get("entity")]
+
+    screens = [s for s in cfg.get("screens", []) if isinstance(s, dict) and s.get("entity") and s.get("display")]
+
+    if not host:
+        log("ERROR: displayhub_host vacío")
+        sys.exit(1)
 
     ha = HA()
-    lcd = LCD(host, port, width, debug)
+    hub = DisplayHub(host, port, debug)
 
-    while True:
-        try:
-            lcd.connect()
-            break
-        except Exception as e:
-            log("Cannot connect to LCDproc:", e)
+    if not screens:
+        log("No screens configured")
+        while True:
             time.sleep(10)
 
-    idx = -1
-    last = 0
-    scroll_step = 0
+    index_by_display = {}
+    last_rotation_by_display = {}
+    scroll_step_by_display = {}
+
+    displays = sorted(set(str(s["display"]) for s in screens))
+
+    for display in displays:
+        index_by_display[display] = 0
+        last_rotation_by_display[display] = 0
+        scroll_step_by_display[display] = 0
+
+    log("Display Hub Client running")
+    log("Display Hub:", host, port)
+    log("Displays:", displays)
 
     while True:
-        try:
-            if not screens:
-                lcd.display("Sin pantallas", "Config add-on")
-                time.sleep(5)
+        now = time.time()
+
+        for display in displays:
+            display_screens = [s for s in screens if str(s.get("display")) == display]
+
+            if not display_screens:
                 continue
 
-            now = time.time()
-            if idx < 0 or now - last >= rotation:
-                idx = (idx + 1) % len(screens)
-                last = now
-                scroll_step = 0
+            if now - last_rotation_by_display[display] >= rotation:
+                index_by_display[display] = (index_by_display[display] + 1) % len(display_screens)
+                last_rotation_by_display[display] = now
+                scroll_step_by_display[display] = 0
 
-            line1, line2 = render(ha, screens[idx], width, scroll_step)
-            lcd.display(line1, line2)
+            screen = display_screens[index_by_display[display]]
+            line1, line2 = render(ha, screen, width, scroll_step_by_display[display])
 
-            scroll_step += 1
-            time.sleep(refresh)
+            hub.send_lines(display, [line1, line2])
+            scroll_step_by_display[display] += 1
 
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
-            log("LCDproc disconnected:", e)
-            time.sleep(3)
-            try:
-                lcd.connect()
-            except Exception as e2:
-                log("Reconnect failed:", e2)
-                time.sleep(10)
-        except Exception as e:
-            log("Runtime error:", e)
-            try:
-                lcd.display("Error", str(e))
-            except Exception:
-                pass
-            time.sleep(5)
+        time.sleep(refresh)
 
 if __name__ == "__main__":
     main()
