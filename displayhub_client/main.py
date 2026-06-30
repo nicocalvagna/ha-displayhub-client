@@ -14,7 +14,7 @@ def load_config():
 def clean(text):
     text = "" if text is None else str(text)
     text = text.replace("\n", " ").replace("\r", " ")
-    text = text.replace("°", "C")
+    text = text.replace("°", "")
     return re.sub(r"\s+", " ", text).strip()
 
 def fit_left(text, width):
